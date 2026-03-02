@@ -1,11 +1,6 @@
 """
-SQLite database layer for car cost bot.
-
-Schema:
-  days(date TEXT PRIMARY KEY,
-       friend1_morning INT, friend1_evening INT,
-       friend2_morning INT, friend2_evening INT,
-       cost REAL)
+SQLite database for car cost bot.
+Resets automatically per week — queries always filter by current ISO week.
 """
 import sqlite3
 from contextlib import contextmanager
@@ -59,17 +54,19 @@ def day_summary(day: str) -> dict:
     with conn() as c:
         row = c.execute("SELECT * FROM days WHERE date = ?", (day,)).fetchone()
     if not row:
-        return {"friend1_trips": 0, "friend2_trips": 0, "friend1_owes": 0.0, "friend2_owes": 0.0}
+        return {"cost": 0.0, "friend1_trips": 0, "friend2_trips": 0,
+                "friend1_owes": 0.0, "friend2_owes": 0.0}
 
     f1_trips = row["friend1_morning"] + row["friend1_evening"]
     f2_trips = row["friend2_morning"] + row["friend2_evening"]
     cost     = row["cost"] or 0.0
 
-    # you always count as 2 units (both ways)
+    # driver = 2 units (both ways); each friend = 1 unit per trip
     total_units = 2 + f1_trips + f2_trips
     unit_cost   = cost / total_units if total_units > 0 else 0.0
 
     return {
+        "cost":          cost,
         "friend1_trips": f1_trips,
         "friend2_trips": f2_trips,
         "friend1_owes":  round(f1_trips * unit_cost, 2),
@@ -77,11 +74,14 @@ def day_summary(day: str) -> dict:
     }
 
 
-def weekly_totals(days: list[str]) -> dict:
-    f1_total = 0.0
-    f2_total = 0.0
+def weekly_totals(days: list) -> dict:
+    f1 = f2 = 0.0
     for day in days:
-        s = day_summary(day)
-        f1_total += s["friend1_owes"]
-        f2_total += s["friend2_owes"]
-    return {"friend1": round(f1_total, 2), "friend2": round(f2_total, 2)}
+        s   = day_summary(day)
+        f1 += s["friend1_owes"]
+        f2 += s["friend2_owes"]
+    return {"friend1": round(f1, 2), "friend2": round(f2, 2)}
+
+
+def weekly_detail(days: list) -> list:
+    return [day_summary(d) for d in days]
