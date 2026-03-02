@@ -253,50 +253,51 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+async def post_init(app: Application):
+    """Wire up scheduler after bot is initialised."""
+    scheduler = AsyncIOScheduler(timezone=TZ)
+
+    async def _ask_morning():
+        class Ctx:
+            bot = app.bot
+            user_data = {}
+        await ask_morning(Ctx())
+
+    async def _ask_evening():
+        class Ctx:
+            bot = app.bot
+            user_data = {}
+        await ask_evening(Ctx())
+
+    async def _weekly():
+        class Ctx:
+            bot = app.bot
+            user_data = {}
+        await send_weekly_summary(Ctx())
+
+    scheduler.add_job(_ask_morning, CronTrigger(day_of_week="mon-fri", hour=14, minute=0,  timezone=TZ))
+    scheduler.add_job(_ask_evening, CronTrigger(day_of_week="mon-fri", hour=21, minute=0,  timezone=TZ))
+    scheduler.add_job(_weekly,      CronTrigger(day_of_week="sat",     hour=9,  minute=0,  timezone=TZ))
+    scheduler.start()
+    logger.info("Scheduler started")
+
+
 def main():
     db.init()
 
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
-    # handlers
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("log",     cmd_log))
     app.add_handler(CommandHandler("week",    cmd_week))
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cost_input))
-
-    # scheduler
-    scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(ask_morning,        CronTrigger(day_of_week="mon-fri", hour=14, minute=0,  timezone=TZ), args=[None])
-    scheduler.add_job(ask_evening,        CronTrigger(day_of_week="mon-fri", hour=21, minute=0,  timezone=TZ), args=[None])
-    scheduler.add_job(send_weekly_summary, CronTrigger(day_of_week="sat",    hour=9,  minute=0,  timezone=TZ), args=[None])
-
-    # patch scheduler jobs to use bot context
-    async def _ask_morning(_):
-        class Ctx:
-            bot = app.bot
-            user_data = {}
-        await ask_morning(Ctx())
-
-    async def _ask_evening(_):
-        class Ctx:
-            bot = app.bot
-            user_data = {}
-        await ask_evening(Ctx())
-
-    async def _weekly(_):
-        class Ctx:
-            bot = app.bot
-            user_data = {}
-        await send_weekly_summary(Ctx())
-
-    scheduler.reschedule_job("ask_morning_job", trigger=None)  # placeholder
-    scheduler.remove_all_jobs()
-    scheduler.add_job(_ask_morning,  CronTrigger(day_of_week="mon-fri", hour=14, minute=0, timezone=TZ))
-    scheduler.add_job(_ask_evening,  CronTrigger(day_of_week="mon-fri", hour=21, minute=0, timezone=TZ))
-    scheduler.add_job(_weekly,       CronTrigger(day_of_week="sat",     hour=9,  minute=0, timezone=TZ))
-    scheduler.start()
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
