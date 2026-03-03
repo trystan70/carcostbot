@@ -411,6 +411,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_weekly_summary(bot, monday, use_f2_cap=False)
 
     # ── Payment messages ──
+    elif d.startswith("edit_day_"):
+        day = d.replace("edit_day_", "")
+        for f in ["friend1_morning","friend1_evening","friend2_morning","friend2_evening"]:
+            db.set_trip(day, f, False)
+        db.set_extra_passengers(day, 0)
+        db.set_skipped(day, False)
+        await q.edit_message_text(f"🔄 *Resetting {day_label(day)} — starting over.*", parse_mode="Markdown")
+        await start_morning(bot, day)
+
     elif d.startswith("send_f1_") or d.startswith("send_f2_"):
         is_f1 = d.startswith("send_f1_")
         rest  = d.replace("send_f1_","").replace("send_f2_","")
@@ -491,13 +500,22 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *{day_label(today)} — no drive.* Skipped.", parse_mode="Markdown")
 
 async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = date.today().isoformat()
-    db.ensure_day(today)
-    for f in ["friend1_morning","friend1_evening","friend2_morning","friend2_evening"]:
-        db.set_trip(today, f, False)
-    db.set_extra_passengers(today, 0)
-    await update.message.reply_text(f"🔄 *Resetting {day_label(today)} — starting over.*", parse_mode="Markdown")
-    await start_morning(context.bot, today)
+    """Ask which day to edit, then show day-picker buttons for this week."""
+    today = date.today()
+    mon   = today - timedelta(days=today.weekday())
+    days  = [(mon + timedelta(days=i)).isoformat() for i in range(7)]
+    buttons = []
+    for day_str in days:
+        d = date.fromisoformat(day_str)
+        if d > today:
+            break  # don't offer future days
+        label = d.strftime("%a %-d %b")
+        buttons.append([InlineKeyboardButton(label, callback_data=f"edit_day_{day_str}")])
+    await update.message.reply_text(
+        "✏️ *Which day do you want to edit?*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 async def cmd_parking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_parking_flow(context.bot, context.user_data)
