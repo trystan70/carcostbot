@@ -309,6 +309,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         val = "yes" in d
         db.set_trip(day, "friend2_morning", val)
         await q.edit_message_text(f"*{FRIEND_2}* morning: {'✅' if val else '❌'}\n✅ Morning logged!", parse_mode="Markdown")
+        # If editing a past day, automatically continue to evening
+        if ud.get("editing_day") == day:
+            await start_evening(bot, day)
 
     elif d.startswith("eve_f1_"):
         day = d.replace("eve_f1_yes_","").replace("eve_f1_no_","")
@@ -323,6 +326,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day = d.replace("eve_f2_yes_","").replace("eve_f2_no_","")
         val = "yes" in d
         db.set_trip(day, "friend2_evening", val)
+        ud.pop("editing_day", None)
         await q.edit_message_text(f"*{FRIEND_2}* evening: {'✅' if val else '❌'}\n✅ Evening logged!", parse_mode="Markdown")
         s = db.day_summary(day)
         await bot.send_message(chat_id=YOUR_CHAT,
@@ -418,6 +422,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.set_extra_passengers(day, 0)
         db.set_skipped(day, False)
         await q.edit_message_text(f"🔄 *Resetting {day_label(day)} — starting over.*", parse_mode="Markdown")
+        ud["editing_day"] = day
         await start_morning(bot, day)
 
     elif d.startswith("send_f1_") or d.startswith("send_f2_"):
