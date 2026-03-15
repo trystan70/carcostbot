@@ -599,6 +599,12 @@ def setup_jobs(app: Application):
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     db.init()
+
+    # Webhook URL must be set in Railway env vars, e.g.:
+    #   WEBHOOK_URL = https://your-app.up.railway.app
+    webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
+    port        = int(os.environ.get("PORT", 8443))
+
     app = Application.builder().token(TOKEN).build()
 
     setup_jobs(app)
@@ -618,8 +624,18 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    logger.info("Bot running")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if webhook_url:
+        logger.info(f"Starting webhook on port {port}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=f"{webhook_url}/webhook",
+            url_path="/webhook",
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        logger.info("No WEBHOOK_URL set — falling back to polling (dev only)")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
