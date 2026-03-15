@@ -603,7 +603,7 @@ def main():
     # Webhook URL must be set in Railway env vars, e.g.:
     #   WEBHOOK_URL = https://your-app.up.railway.app
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
-    port        = int(os.environ.get("PORT", 8443))
+    port        = int(os.environ.get("PORT", 8080))  # Railway sets PORT automatically
 
     app = Application.builder().token(TOKEN).build()
 
