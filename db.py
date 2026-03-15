@@ -58,9 +58,10 @@ def init():
         """)
         cols = [r[1] for r in c.execute("PRAGMA table_info(days)")]
         for col, defn in [
-            ("extra_passengers", "INTEGER DEFAULT 0"),
-            ("parking_type",     "TEXT DEFAULT 'none'"),
-            ("skipped",          "INTEGER DEFAULT 0"),
+            ("extra_passengers",  "INTEGER DEFAULT 0"),
+            ("parking_type",      "TEXT DEFAULT 'none'"),
+            ("skipped",           "INTEGER DEFAULT 0"),
+            ("evening_logged",    "INTEGER DEFAULT 0"),
         ]:
             if col not in cols:
                 c.execute(f"ALTER TABLE days ADD COLUMN {col} {defn}")
@@ -99,6 +100,27 @@ def is_skipped(day: str) -> bool:
     with conn() as c:
         row = c.execute("SELECT skipped FROM days WHERE date = ?", (day,)).fetchone()
     return bool(row["skipped"]) if row else False
+
+
+def set_evening_logged(day: str):
+    ensure_day(day)
+    with conn() as c:
+        c.execute("UPDATE days SET evening_logged = 1 WHERE date = ?", (day,))
+
+
+def is_evening_logged(day: str) -> bool:
+    with conn() as c:
+        row = c.execute("SELECT evening_logged FROM days WHERE date = ?", (day,)).fetchone()
+    return bool(row["evening_logged"]) if row else False
+
+
+def has_any_data(day: str) -> bool:
+    """True if the day has been logged via daily check-ins (trips or evening_logged set)."""
+    with conn() as c:
+        row = c.execute("SELECT * FROM days WHERE date = ?", (day,)).fetchone()
+    if not row:
+        return False
+    return bool(row["evening_logged"]) or bool(row["skipped"])
 
 
 def parking_rate(ptype: str) -> float:

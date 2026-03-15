@@ -107,8 +107,9 @@ async def job_late_nudge(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
     if db.is_skipped(today):
         return
-    s = db.day_summary(today)
-    if s["friend1_trips"] == 0 and s["friend2_trips"] == 0 and s["parking_type"] == "none":
+    if db.is_evening_logged(today) or db.is_skipped(today):
+        return  # already logged or explicitly skipped
+    if True:  # evening not logged
         await context.bot.send_message(
             chat_id=YOUR_CHAT,
             text=(
@@ -128,9 +129,13 @@ async def job_late_nudge(context: ContextTypes.DEFAULT_TYPE):
 #      - Yes → ask parking type, then move on
 #   4. If at least one said yes → ask parking type immediately
 
-async def start_parking_flow(bot, user_data):
-    monday = last_week_monday()
-    days   = week_days_for_monday(monday)
+async def start_parking_flow(bot, user_data, use_current_week=False):
+    if use_current_week:
+        today  = date.today()
+        monday = (today - timedelta(days=today.weekday())).isoformat()
+    else:
+        monday = last_week_monday()
+    days = week_days_for_monday(monday)
     user_data["park_flow"] = {
         "monday": monday,
         "days":   days,
@@ -147,6 +152,14 @@ async def _park_ask_f1(bot, user_data):
         await _handle_parking_done(bot, user_data)
         return
     day      = flow["days"][idx]
+    # Day already logged via daily check-ins — skip passenger questions
+    if db.is_skipped(day):
+        user_data["park_flow"]["idx"] = idx + 1
+        await _park_ask_f1(bot, user_data)
+        return
+    if db.has_any_data(day):
+        await _park_ask_type(bot, user_data)
+        return
     day_name = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
     await bot.send_message(
         chat_id=YOUR_CHAT,
@@ -184,20 +197,21 @@ async def _park_ask_type(bot, user_data):
     idx         = flow["idx"]
     day         = flow["days"][idx]
     day_name    = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+    s           = db.day_summary(day)
+    trip_note   = f" ({FRIEND_1}: {s['friend1_trips']}t, {FRIEND_2}: {s['friend2_trips']}t)" if db.has_any_data(day) else ""
     weekday_num = date.fromisoformat(day).weekday()
     if weekday_num >= 5:
-        # Weekend — auto evening rate
         db.set_parking_type(day, "evening")
         await bot.send_message(
             chat_id=YOUR_CHAT,
-            text=f"🅿️ *{day_name}* — Did you park? (weekend rate £{db.EVENING_RATE} if yes)",
+            text=f"🅿️ *{day_name}*{trip_note} — Did you park? (weekend rate £{db.EVENING_RATE} if yes)",
             parse_mode="Markdown",
             reply_markup=yn_kb(f"pk_park_yes_{idx}", f"pk_park_no_{idx}")
         )
     else:
         await bot.send_message(
             chat_id=YOUR_CHAT,
-            text=f"🅿️ *{day_name}* — Did you park?",
+            text=f"🅿️ *{day_name}*{trip_note} — Did you park?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"☀️ Yes, daytime £{db.WEEKDAY_RATE}", callback_data=f"pk_wd_{idx}"),
@@ -282,7 +296,7 @@ async def job_evening(context: ContextTypes.DEFAULT_TYPE):
     await start_evening(context.bot, date.today().isoformat())
 
 async def job_weekly(context: ContextTypes.DEFAULT_TYPE):
-    await start_parking_flow(context.bot, context.bot_data)
+    await start_parking_flow(context.bot, context.bot_data, use_current_week=True)
 
 
 # ── Callback handler ───────────────────────────────────────────────────────────
@@ -327,6 +341,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         val = "yes" in d
         db.set_trip(day, "friend2_evening", val)
         ud.pop("editing_day", None)
+        db.set_evening_logged(day)
         await q.edit_message_text(f"*{FRIEND_2}* evening: {'✅' if val else '❌'}\n✅ Evening logged!", parse_mode="Markdown")
         s = db.day_summary(day)
         await bot.send_message(chat_id=YOUR_CHAT,
