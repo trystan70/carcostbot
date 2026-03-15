@@ -538,7 +538,10 @@ async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_parking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_parking_flow(context.bot, context.user_data)
+    # use_current_week: from Saturday/Sunday, target Mon of the same week not the one before
+    today = date.today()
+    use_current = today.weekday() >= 5  # Sat=5, Sun=6
+    await start_parking_flow(context.bot, context.user_data, use_current_week=use_current)
 
 async def cmd_sofar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     days = current_week_days()
