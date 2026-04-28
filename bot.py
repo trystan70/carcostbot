@@ -17,13 +17,12 @@ TOKEN        = os.environ["TELEGRAM_TOKEN"]
 YOUR_CHAT    = int(os.environ["YOUR_CHAT_ID"])
 FRIEND_1     = os.environ.get("FRIEND_1_NAME", "Fran")
 FRIEND_2     = os.environ.get("FRIEND_2_NAME", "Lauren")
+FRIEND_3     = os.environ.get("FRIEND_3_NAME", "Noah")
 TIMEZONE     = os.environ.get("TIMEZONE", "Europe/London")
 PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "")
 TZ           = pytz.timezone(TIMEZONE)
 DAY_NAMES    = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-# Days for PTB job_queue (0=Mon … 6=Sun)
-WEEKDAYS = tuple(range(5))   # Mon–Fri
+WEEKDAYS     = tuple(range(5))
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -92,10 +91,9 @@ async def send_extra_summary(bot, day: str):
         chat_id=YOUR_CHAT,
         text=(
             f"👤 *Extra passenger charge — {day_label(day)}*\n\n"
-            f"{count} extra(s) × {fmt(each)} each\n"
-            f"  ↳ parking share (@ £{db.EXTRA_PARK_BASIS} basis): {fmt(s['ex_park_each'])}\n"
-            f"  ↳ petrol share: {fmt(s['ex_pet_each'])}\n\n"
-            f"_(Their presence reduced {FRIEND_1} & {FRIEND_2}'s costs today)_\n\n"
+            f"{count} extra(s) × {fmt(each)} each = *{fmt(s['ex_owes_total'])}*\n"
+            f"_(1 unit share of {fmt(s['parking_cost'])} parking + {fmt(s['petrol'])} petrol "
+            f"across {s['pool_units']} main pool units)_\n\n"
             f"💬 Message to send each extra:\n```\n{msg_template}\n```"
         ),
         parse_mode="Markdown"
@@ -105,30 +103,16 @@ async def send_extra_summary(bot, day: str):
 # ── Late nudge ─────────────────────────────────────────────────────────────────
 async def job_late_nudge(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
-    if db.is_skipped(today):
-        return
     if db.is_evening_logged(today) or db.is_skipped(today):
-        return  # already logged or explicitly skipped
-    if True:  # evening not logged
-        await context.bot.send_message(
-            chat_id=YOUR_CHAT,
-            text=(
-                "⏰ *Reminder* — evening not logged yet!\n\n"
-                "Use /logpm to log now, or /skip if you didn't drive today."
-            ),
-            parse_mode="Markdown"
-        )
+        return
+    await context.bot.send_message(
+        chat_id=YOUR_CHAT,
+        text="⏰ *Reminder* — evening not logged yet!\n\nUse /logpm to log now, or /skip if you didn't drive.",
+        parse_mode="Markdown"
+    )
 
 
-# ── Parking flow — per-day ─────────────────────────────────────────────────────
-# New flow for each day:
-#   1. Did F1 get a lift? [yes/no]
-#   2. Did F2 get a lift? [yes/no]
-#   3. If BOTH said no → "Did you even drive today?" [yes/no]
-#      - No → mark skipped, move to next day
-#      - Yes → ask parking type, then move on
-#   4. If at least one said yes → ask parking type immediately
-
+# ── Parking flow ───────────────────────────────────────────────────────────────
 async def start_parking_flow(bot, user_data, use_current_week=False):
     if use_current_week:
         today  = date.today()
@@ -137,22 +121,23 @@ async def start_parking_flow(bot, user_data, use_current_week=False):
         monday = last_week_monday()
     days = week_days_for_monday(monday)
     user_data["park_flow"] = {
-        "monday": monday,
-        "days":   days,
-        "idx":    0,
+        "monday":  monday,
+        "days":    days,
+        "idx":     0,
         "f1_rode": None,
         "f2_rode": None,
+        "f3_rode": None,
     }
     await _park_ask_f1(bot, user_data)
 
+
 async def _park_ask_f1(bot, user_data):
-    flow     = user_data["park_flow"]
-    idx      = flow["idx"]
+    flow = user_data["park_flow"]
+    idx  = flow["idx"]
     if idx >= 7:
         await _handle_parking_done(bot, user_data)
         return
-    day      = flow["days"][idx]
-    # Day already logged via daily check-ins — skip passenger questions
+    day = flow["days"][idx]
     if db.is_skipped(day):
         user_data["park_flow"]["idx"] = idx + 1
         await _park_ask_f1(bot, user_data)
@@ -160,63 +145,71 @@ async def _park_ask_f1(bot, user_data):
     if db.has_any_data(day):
         await _park_ask_type(bot, user_data)
         return
-    day_name = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+    dname = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
     await bot.send_message(
         chat_id=YOUR_CHAT,
-        text=f"📅 *{day_name}* — Did *{FRIEND_1}* get a lift?",
+        text=f"📅 *{dname}* — Did *{FRIEND_1}* get a lift?",
         parse_mode="Markdown",
         reply_markup=yn_kb(f"pk_f1_yes_{idx}", f"pk_f1_no_{idx}")
     )
 
 async def _park_ask_f2(bot, user_data):
-    flow     = user_data["park_flow"]
-    idx      = flow["idx"]
-    day      = flow["days"][idx]
-    day_name = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+    idx   = user_data["park_flow"]["idx"]
+    day   = user_data["park_flow"]["days"][idx]
+    dname = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
     await bot.send_message(
         chat_id=YOUR_CHAT,
-        text=f"📅 *{day_name}* — Did *{FRIEND_2}* get a lift?",
+        text=f"📅 *{dname}* — Did *{FRIEND_2}* get a lift?",
         parse_mode="Markdown",
         reply_markup=yn_kb(f"pk_f2_yes_{idx}", f"pk_f2_no_{idx}")
     )
 
-async def _park_ask_drove(bot, user_data):
-    flow     = user_data["park_flow"]
-    idx      = flow["idx"]
-    day      = flow["days"][idx]
-    day_name = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+async def _park_ask_f3(bot, user_data):
+    idx   = user_data["park_flow"]["idx"]
+    day   = user_data["park_flow"]["days"][idx]
+    dname = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
     await bot.send_message(
         chat_id=YOUR_CHAT,
-        text=f"📅 *{day_name}* — Neither got a lift. Did you drive at all?",
+        text=f"📅 *{dname}* — Did *{FRIEND_3}* get a lift?",
+        parse_mode="Markdown",
+        reply_markup=yn_kb(f"pk_f3_yes_{idx}", f"pk_f3_no_{idx}")
+    )
+
+async def _park_ask_drove(bot, user_data):
+    idx   = user_data["park_flow"]["idx"]
+    day   = user_data["park_flow"]["days"][idx]
+    dname = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+    await bot.send_message(
+        chat_id=YOUR_CHAT,
+        text=f"📅 *{dname}* — Nobody got a lift. Did you drive at all?",
         parse_mode="Markdown",
         reply_markup=yn_kb(f"pk_drove_yes_{idx}", f"pk_drove_no_{idx}")
     )
 
 async def _park_ask_type(bot, user_data):
-    flow        = user_data["park_flow"]
-    idx         = flow["idx"]
-    day         = flow["days"][idx]
-    day_name    = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
-    s           = db.day_summary(day)
-    trip_note   = f" ({FRIEND_1}: {s['friend1_trips']}t, {FRIEND_2}: {s['friend2_trips']}t)" if db.has_any_data(day) else ""
-    weekday_num = date.fromisoformat(day).weekday()
-    if weekday_num >= 5:
-        db.set_parking_type(day, "evening")
+    flow      = user_data["park_flow"]
+    idx       = flow["idx"]
+    day       = flow["days"][idx]
+    dname     = f"{DAY_NAMES[idx]} {date.fromisoformat(day).strftime('%-d %b')}"
+    s         = db.day_summary(day)
+    trip_note = (f" ({FRIEND_1}: {s['friend1_trips']}t, {FRIEND_2}: {s['friend2_trips']}t, "
+                 f"{FRIEND_3}: {s['friend3_trips']}t)") if db.has_any_data(day) else ""
+    if date.fromisoformat(day).weekday() >= 5:
         await bot.send_message(
             chat_id=YOUR_CHAT,
-            text=f"🅿️ *{day_name}*{trip_note} — Did you park? (weekend rate £{db.EVENING_RATE} if yes)",
+            text=f"🅿️ *{dname}*{trip_note} — Did you park? (weekend rate £{db.EVENING_RATE})",
             parse_mode="Markdown",
             reply_markup=yn_kb(f"pk_park_yes_{idx}", f"pk_park_no_{idx}")
         )
     else:
         await bot.send_message(
             chat_id=YOUR_CHAT,
-            text=f"🅿️ *{day_name}*{trip_note} — Did you park?",
+            text=f"🅿️ *{dname}*{trip_note} — Did you park?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"☀️ Yes, daytime £{db.WEEKDAY_RATE}", callback_data=f"pk_wd_{idx}"),
-                InlineKeyboardButton(f"🌙 Yes, evening £{db.EVENING_RATE}",  callback_data=f"pk_ev_{idx}"),
-                InlineKeyboardButton("❌ No parking",                          callback_data=f"pk_park_no_{idx}"),
+                InlineKeyboardButton(f"☀️ Daytime £{db.WEEKDAY_RATE}", callback_data=f"pk_wd_{idx}"),
+                InlineKeyboardButton(f"🌙 Evening £{db.EVENING_RATE}",  callback_data=f"pk_ev_{idx}"),
+                InlineKeyboardButton("❌ No parking",                    callback_data=f"pk_park_no_{idx}"),
             ]])
         )
 
@@ -224,63 +217,53 @@ async def _park_next_day(bot, user_data):
     user_data["park_flow"]["idx"]    += 1
     user_data["park_flow"]["f1_rode"] = None
     user_data["park_flow"]["f2_rode"] = None
+    user_data["park_flow"]["f3_rode"] = None
     await _park_ask_f1(bot, user_data)
 
 async def _handle_parking_done(bot, user_data):
     monday = user_data["park_flow"]["monday"]
-    days   = week_days_for_monday(monday)
-    tots   = db.weekly_totals(days)
-    if tots["f2_over_cap"]:
-        await bot.send_message(
-            chat_id=YOUR_CHAT,
-            text=(
-                f"⚠️ *{FRIEND_2}'s parking this week*\n\n"
-                f"Uncapped: *{fmt(tots['f2_park_raw'])}*\n"
-                f"Capped:   *{fmt(tots['f2_park_capped'])}* _(saves {fmt(tots['f2_cap_saving'])})_\n\n"
-                f"Give *{FRIEND_2}* the capped fare?"
-            ),
-            parse_mode="Markdown",
-            reply_markup=yn_kb(f"f2cap_yes_{monday}", f"f2cap_no_{monday}")
-        )
-    else:
-        await _send_weekly_summary(bot, monday, use_f2_cap=False)
+    await _send_weekly_summary(bot, monday)
 
 
 # ── Weekly summary ─────────────────────────────────────────────────────────────
-async def _send_weekly_summary(bot, monday: str, use_f2_cap: bool = False):
+async def _send_weekly_summary(bot, monday: str):
     days = week_days_for_monday(monday)
     tots = db.weekly_totals(days)
-    f1   = tots["friend1"]
-    f2   = tots["friend2_capped"] if use_f2_cap else tots["friend2_raw"]
 
     lines = ["📊 *Weekly Summary*\n"]
     for day in days:
         if db.is_skipped(day):
             continue
         s = db.day_summary(day)
-        if s["parking_cost"] == 0 and s["friend1_trips"] == 0 and s["friend2_trips"] == 0:
+        if s["parking_cost"] == 0 and s["friend1_trips"] == 0 and s["friend2_trips"] == 0 and s["friend3_trips"] == 0:
             continue
         park_str = f"park {fmt(s['parking_cost'])} ({s['parking_type']})" if s["parking_cost"] else "no parking"
         ext_str  = f" + {s['extra_passengers']} extra(s) @{fmt(s['ex_owes_each'])}" if s["extra_passengers"] else ""
         lines.append(
             f"*{day_label(day)}*: petrol {fmt(s['petrol'])} + {park_str}\n"
-            f"  {FRIEND_1}: {s['friend1_trips']} trip(s)  {FRIEND_2}: {s['friend2_trips']} trip(s){ext_str}"
+            f"  {FRIEND_1}: {s['friend1_trips']}t  {FRIEND_2}: {s['friend2_trips']}t  "
+            f"{FRIEND_3}: {s['friend3_trips']}t{ext_str}"
         )
 
-    f1_cap_note  = f" _(cap saved {fmt(tots['f1_park_raw'] - tots['f1_park_capped'])})_" if tots["f1_park_raw"] > tots["f1_park_capped"] else ""
-    f2_park_used = tots["f2_park_capped"] if use_f2_cap else tots["f2_park_raw"]
-    f2_cap_note  = " _(capped)_" if use_f2_cap else ""
+    def cap_note(raw, capped):
+        return f" _(cap saved {fmt(raw - capped)})_" if raw > capped else ""
 
     lines.append(
-        f"\n*{FRIEND_1}* owes: *{fmt(f1)}*\n"
-        f"  ↳ petrol {fmt(tots['f1_pet'])} + parking {fmt(tots['f1_park_capped'])}{f1_cap_note}\n"
-        f"*{FRIEND_2}* owes: *{fmt(f2)}*\n"
-        f"  ↳ petrol {fmt(tots['f2_pet'])} + parking {fmt(f2_park_used)}{f2_cap_note}"
+        f"\n*{FRIEND_1}* owes: *{fmt(tots['friend1'])}*\n"
+        f"  ↳ petrol {fmt(tots['f1_pet'])} + parking {fmt(tots['f1_park_capped'])}"
+        f"{cap_note(tots['f1_park_raw'], tots['f1_park_capped'])}\n"
+        f"*{FRIEND_2}* owes: *{fmt(tots['friend2'])}*\n"
+        f"  ↳ petrol {fmt(tots['f2_pet'])} + parking {fmt(tots['f2_park_capped'])}"
+        f"{cap_note(tots['f2_park_raw'], tots['f2_park_capped'])}\n"
+        f"*{FRIEND_3}* owes: *{fmt(tots['friend3'])}*\n"
+        f"  ↳ petrol {fmt(tots['f3_pet'])} + parking {fmt(tots['f3_park_capped'])}"
+        f"{cap_note(tots['f3_park_raw'], tots['f3_park_capped'])}"
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"📨 {FRIEND_1}'s message", callback_data=f"send_f1_{monday}_{int(use_f2_cap)}")],
-        [InlineKeyboardButton(f"📨 {FRIEND_2}'s message", callback_data=f"send_f2_{monday}_{int(use_f2_cap)}")],
+        [InlineKeyboardButton(f"📨 {FRIEND_1}'s message", callback_data=f"send_f1_{monday}")],
+        [InlineKeyboardButton(f"📨 {FRIEND_2}'s message", callback_data=f"send_f2_{monday}")],
+        [InlineKeyboardButton(f"📨 {FRIEND_3}'s message", callback_data=f"send_f3_{monday}")],
     ])
     await bot.send_message(
         chat_id=YOUR_CHAT, text="\n".join(lines),
@@ -288,7 +271,7 @@ async def _send_weekly_summary(bot, monday: str, use_f2_cap: bool = False):
     )
 
 
-# ── Scheduled job functions (PTB job_queue style) ──────────────────────────────
+# ── Scheduled jobs ─────────────────────────────────────────────────────────────
 async def job_morning(context: ContextTypes.DEFAULT_TYPE):
     await start_morning(context.bot, date.today().isoformat())
 
@@ -307,26 +290,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     ud  = context.user_data
 
-    # ── Daily morning/evening flows (unchanged) ──
-
+    # ── Daily morning flow ──
     if d.startswith("morn_f1_"):
         day = d.replace("morn_f1_yes_","").replace("morn_f1_no_","")
         val = "yes" in d
         db.set_trip(day, "friend1_morning", val)
         await q.edit_message_text(f"*{FRIEND_1}* morning: {'✅' if val else '❌'}", parse_mode="Markdown")
         await bot.send_message(chat_id=YOUR_CHAT,
-            text=f"Did *{FRIEND_2}* get a lift in this morning?", parse_mode="Markdown",
+            text=f"Did *{FRIEND_2}* get a lift in?", parse_mode="Markdown",
             reply_markup=yn_kb(f"morn_f2_yes_{day}", f"morn_f2_no_{day}"))
 
     elif d.startswith("morn_f2_"):
         day = d.replace("morn_f2_yes_","").replace("morn_f2_no_","")
         val = "yes" in d
         db.set_trip(day, "friend2_morning", val)
-        await q.edit_message_text(f"*{FRIEND_2}* morning: {'✅' if val else '❌'}\n✅ Morning logged!", parse_mode="Markdown")
-        # If editing a past day, automatically continue to evening
+        await q.edit_message_text(f"*{FRIEND_2}* morning: {'✅' if val else '❌'}", parse_mode="Markdown")
+        await bot.send_message(chat_id=YOUR_CHAT,
+            text=f"Did *{FRIEND_3}* get a lift in?", parse_mode="Markdown",
+            reply_markup=yn_kb(f"morn_f3_yes_{day}", f"morn_f3_no_{day}"))
+
+    elif d.startswith("morn_f3_"):
+        day = d.replace("morn_f3_yes_","").replace("morn_f3_no_","")
+        val = "yes" in d
+        db.set_trip(day, "friend3_morning", val)
+        await q.edit_message_text(
+            f"*{FRIEND_3}* morning: {'✅' if val else '❌'}\n✅ Morning logged!", parse_mode="Markdown")
         if ud.get("editing_day") == day:
             await start_evening(bot, day)
 
+    # ── Daily evening flow ──
     elif d.startswith("eve_f1_"):
         day = d.replace("eve_f1_yes_","").replace("eve_f1_no_","")
         val = "yes" in d
@@ -340,18 +332,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day = d.replace("eve_f2_yes_","").replace("eve_f2_no_","")
         val = "yes" in d
         db.set_trip(day, "friend2_evening", val)
+        await q.edit_message_text(f"*{FRIEND_2}* evening: {'✅' if val else '❌'}", parse_mode="Markdown")
+        await bot.send_message(chat_id=YOUR_CHAT,
+            text=f"Did *{FRIEND_3}* get a lift home?", parse_mode="Markdown",
+            reply_markup=yn_kb(f"eve_f3_yes_{day}", f"eve_f3_no_{day}"))
+
+    elif d.startswith("eve_f3_"):
+        day = d.replace("eve_f3_yes_","").replace("eve_f3_no_","")
+        val = "yes" in d
+        db.set_trip(day, "friend3_evening", val)
         ud.pop("editing_day", None)
         db.set_evening_logged(day)
-        await q.edit_message_text(f"*{FRIEND_2}* evening: {'✅' if val else '❌'}\n✅ Evening logged!", parse_mode="Markdown")
+        await q.edit_message_text(
+            f"*{FRIEND_3}* evening: {'✅' if val else '❌'}\n✅ Evening logged!", parse_mode="Markdown")
         s = db.day_summary(day)
         await bot.send_message(chat_id=YOUR_CHAT,
             text=(f"📋 *{day_label(day)}*: petrol {fmt(s['petrol'])} + parking logged Sat\n"
-                  f"🚗 {FRIEND_1}: {s['friend1_trips']} trip(s)  {FRIEND_2}: {s['friend2_trips']} trip(s)"),
+                  f"🚗 {FRIEND_1}: {s['friend1_trips']}t  {FRIEND_2}: {s['friend2_trips']}t  "
+                  f"{FRIEND_3}: {s['friend3_trips']}t"),
             parse_mode="Markdown")
         await send_extra_summary(bot, day)
 
-    # ── New parking flow callbacks (use idx not full date) ──
-
+    # ── Parking flow ──
     elif d.startswith("pk_f1_"):
         idx = int(d.replace("pk_f1_yes_","").replace("pk_f1_no_",""))
         val = "yes" in d
@@ -372,8 +374,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.set_trip(day, "friend2_morning", 1)
             db.set_trip(day, "friend2_evening", 1)
         await q.edit_message_text(f"*{FRIEND_2}*: {'✅' if val else '❌'}", parse_mode="Markdown")
-        # If both no → ask if you drove at all
-        if not ud["park_flow"]["f1_rode"] and not val:
+        await _park_ask_f3(bot, ud)
+
+    elif d.startswith("pk_f3_"):
+        idx = int(d.replace("pk_f3_yes_","").replace("pk_f3_no_",""))
+        val = "yes" in d
+        ud["park_flow"]["f3_rode"] = val
+        day = ud["park_flow"]["days"][idx]
+        if val:
+            db.set_trip(day, "friend3_morning", 1)
+            db.set_trip(day, "friend3_evening", 1)
+        await q.edit_message_text(f"*{FRIEND_3}*: {'✅' if val else '❌'}", parse_mode="Markdown")
+        if not ud["park_flow"]["f1_rode"] and not ud["park_flow"]["f2_rode"] and not val:
             await _park_ask_drove(bot, ud)
         else:
             await _park_ask_type(bot, ud)
@@ -386,25 +398,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx = int(d.replace("pk_drove_no_",""))
         day = ud["park_flow"]["days"][idx]
         db.set_skipped(day, True)
-        await q.edit_message_text(f"❌ {DAY_NAMES[idx]} — no drive, skipped.", parse_mode="Markdown")
+        await q.edit_message_text(f"❌ {DAY_NAMES[idx]} — no drive.", parse_mode="Markdown")
         await _park_next_day(bot, ud)
 
     elif d.startswith("pk_wd_"):
         idx = int(d.replace("pk_wd_",""))
         day = ud["park_flow"]["days"][idx]
         db.set_parking_type(day, "weekday")
-        await q.edit_message_text(f"🅿️ {DAY_NAMES[idx]} — daytime parking (£{db.WEEKDAY_RATE})", parse_mode="Markdown")
+        await q.edit_message_text(f"🅿️ {DAY_NAMES[idx]} — daytime (£{db.WEEKDAY_RATE})", parse_mode="Markdown")
         await _park_next_day(bot, ud)
 
     elif d.startswith("pk_ev_"):
         idx = int(d.replace("pk_ev_",""))
         day = ud["park_flow"]["days"][idx]
         db.set_parking_type(day, "evening")
-        await q.edit_message_text(f"🅿️ {DAY_NAMES[idx]} — evening parking (£{db.EVENING_RATE})", parse_mode="Markdown")
+        await q.edit_message_text(f"🅿️ {DAY_NAMES[idx]} — evening (£{db.EVENING_RATE})", parse_mode="Markdown")
         await _park_next_day(bot, ud)
 
     elif d.startswith("pk_park_yes_"):
-        # weekend only (auto evening rate already set)
         idx = int(d.replace("pk_park_yes_",""))
         day = ud["park_flow"]["days"][idx]
         db.set_parking_type(day, "evening")
@@ -418,40 +429,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"❌ {DAY_NAMES[idx]} — no parking.", parse_mode="Markdown")
         await _park_next_day(bot, ud)
 
-    # ── F2 cap ──
-    elif d.startswith("f2cap_yes_"):
-        monday = d.replace("f2cap_yes_","")
-        await q.edit_message_text(f"✅ Giving *{FRIEND_2}* capped fare.", parse_mode="Markdown")
-        await _send_weekly_summary(bot, monday, use_f2_cap=True)
-
-    elif d.startswith("f2cap_no_"):
-        monday = d.replace("f2cap_no_","")
-        await q.edit_message_text(f"✅ Charging *{FRIEND_2}* full amount.", parse_mode="Markdown")
-        await _send_weekly_summary(bot, monday, use_f2_cap=False)
-
     # ── Payment messages ──
     elif d.startswith("edit_day_"):
         day = d.replace("edit_day_", "")
-        for f in ["friend1_morning","friend1_evening","friend2_morning","friend2_evening"]:
+        for f in ["friend1_morning","friend1_evening","friend2_morning","friend2_evening",
+                  "friend3_morning","friend3_evening"]:
             db.set_trip(day, f, False)
         db.set_extra_passengers(day, 0)
         db.set_skipped(day, False)
-        await q.edit_message_text(f"🔄 *Resetting {day_label(day)} — starting over.*", parse_mode="Markdown")
         ud["editing_day"] = day
+        await q.edit_message_text(f"🔄 *Resetting {day_label(day)} — starting over.*", parse_mode="Markdown")
         await start_morning(bot, day)
 
-    elif d.startswith("send_f1_") or d.startswith("send_f2_"):
-        is_f1 = d.startswith("send_f1_")
-        rest  = d.replace("send_f1_","").replace("send_f2_","")
-        *mon_parts, cap_flag = rest.split("_")
-        monday  = "_".join(mon_parts)
-        use_cap = cap_flag == "1"
-        tots    = db.weekly_totals(week_days_for_monday(monday))
-        name    = FRIEND_1 if is_f1 else FRIEND_2
-        amount  = tots["friend1"] if is_f1 else (tots["friend2_capped"] if use_cap else tots["friend2_raw"])
-        msg     = (f"Hey {name}! 🚗\n\nThis week's lift costs — you owe {fmt(amount)}."
-                   f"{pay_link(amount)}\n\nThanks! 😊")
-        await q.edit_message_text(f"Copy & send to *{name}*:\n\n```\n{msg}\n```", parse_mode="Markdown")
+    elif d.startswith("send_f1_") or d.startswith("send_f2_") or d.startswith("send_f3_"):
+        if d.startswith("send_f1_"):
+            monday = d.replace("send_f1_",""); key = "friend1"; name = FRIEND_1
+        elif d.startswith("send_f2_"):
+            monday = d.replace("send_f2_",""); key = "friend2"; name = FRIEND_2
+        else:
+            monday = d.replace("send_f3_",""); key = "friend3"; name = FRIEND_3
+        tots   = db.weekly_totals(week_days_for_monday(monday))
+        amount = tots[key]
+        msg    = (f"Hey {name}! 🚗\n\nThis week's lift costs — you owe {fmt(amount)}."
+                  f"{pay_link(amount)}\n\nThanks! 😊")
+        await q.edit_message_text(
+            f"Copy & send to *{name}*:\n\n```\n{msg}\n```", parse_mode="Markdown")
 
 
 # ── Text input ─────────────────────────────────────────────────────────────────
@@ -484,9 +486,9 @@ async def cmd_cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/logpm — evening check-in\n"
         "/extra — log extra passenger(s) today\n"
         "/skip — mark today as no-drive\n"
-        "/edit — redo today's check-ins\n\n"
+        "/edit — redo a day's check-ins\n\n"
         "*Weekly*\n"
-        "/parking — run parking + trip questions for last week\n"
+        "/parking — run parking questions\n"
         "/sofar — running totals this week\n"
         "/summary — weekly summary + payment messages\n"
         "/history — last week's summary\n\n"
@@ -520,7 +522,6 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ *{day_label(today)} — no drive.* Skipped.", parse_mode="Markdown")
 
 async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ask which day to edit, then show day-picker buttons for this week."""
     today = date.today()
     mon   = today - timedelta(days=today.weekday())
     days  = [(mon + timedelta(days=i)).isoformat() for i in range(7)]
@@ -528,19 +529,16 @@ async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for day_str in days:
         d = date.fromisoformat(day_str)
         if d > today:
-            break  # don't offer future days
-        label = d.strftime("%a %-d %b")
-        buttons.append([InlineKeyboardButton(label, callback_data=f"edit_day_{day_str}")])
+            break
+        buttons.append([InlineKeyboardButton(d.strftime("%a %-d %b"), callback_data=f"edit_day_{day_str}")])
     await update.message.reply_text(
         "✏️ *Which day do you want to edit?*",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        reply_markup=InlineKeyboardMarkup(buttons))
 
 async def cmd_parking(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # use_current_week: from Saturday/Sunday, target Mon of the same week not the one before
     today = date.today()
-    use_current = today.weekday() >= 5  # Sat=5, Sun=6
+    use_current = today.weekday() >= 5
     await start_parking_flow(context.bot, context.user_data, use_current_week=use_current)
 
 async def cmd_sofar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -550,26 +548,36 @@ async def cmd_sofar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for day_str in days:
         if db.is_skipped(day_str): continue
         s = db.day_summary(day_str)
-        if s["parking_cost"] == 0 and s["friend1_trips"] == 0 and s["friend2_trips"] == 0: continue
+        if s["parking_cost"] == 0 and s["friend1_trips"] == 0 and s["friend2_trips"] == 0 and s["friend3_trips"] == 0:
+            continue
         park_str = f"park {fmt(s['parking_cost'])} ({s['parking_type']})" if s["parking_cost"] else "parking TBC"
         ext_str  = f" + {s['extra_passengers']} extra(s) @{fmt(s['ex_owes_each'])}" if s["extra_passengers"] else ""
         lines.append(
             f"*{day_label(day_str)}*: petrol {fmt(s['petrol'])} + {park_str}\n"
-            f"  {FRIEND_1}: {s['friend1_trips']} trip(s)  {FRIEND_2}: {s['friend2_trips']} trip(s){ext_str}")
+            f"  {FRIEND_1}: {s['friend1_trips']}t  {FRIEND_2}: {s['friend2_trips']}t  "
+            f"{FRIEND_3}: {s['friend3_trips']}t{ext_str}")
     if len(lines) == 1:
         lines.append("_Nothing logged yet_")
-    cap_note = f" _(cap, saved {fmt(tots['f1_park_raw'] - tots['f1_park_capped'])})_" if tots["f1_park_raw"] > tots["f1_park_capped"] else ""
+
+    def cn(raw, capped):
+        return f" (cap saved {fmt(raw-capped)})" if raw > capped else ""
+
     lines.append(
-        f"\n*{FRIEND_1}*: {fmt(tots['friend1'])} (petrol {fmt(tots['f1_pet'])} + parking {fmt(tots['f1_park_capped'])}{cap_note})\n"
-        f"*{FRIEND_2}*: {fmt(tots['friend2_raw'])} (petrol {fmt(tots['f2_pet'])} + parking {fmt(tots['f2_park_raw'])})")
+        f"\n*{FRIEND_1}*: {fmt(tots['friend1'])} (pet {fmt(tots['f1_pet'])} + park {fmt(tots['f1_park_capped'])}"
+        f"{cn(tots['f1_park_raw'], tots['f1_park_capped'])})\n"
+        f"*{FRIEND_2}*: {fmt(tots['friend2'])} (pet {fmt(tots['f2_pet'])} + park {fmt(tots['f2_park_capped'])}"
+        f"{cn(tots['f2_park_raw'], tots['f2_park_capped'])})\n"
+        f"*{FRIEND_3}*: {fmt(tots['friend3'])} (pet {fmt(tots['f3_pet'])} + park {fmt(tots['f3_park_capped'])}"
+        f"{cn(tots['f3_park_raw'], tots['f3_park_capped'])})"
+    )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monday = (date.today() - timedelta(days=date.today().weekday())).isoformat()
-    await _send_weekly_summary(context.bot, monday, use_f2_cap=False)
+    await _send_weekly_summary(context.bot, monday)
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _send_weekly_summary(context.bot, last_week_monday(), use_f2_cap=False)
+    await _send_weekly_summary(context.bot, last_week_monday())
 
 async def cmd_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -577,39 +585,28 @@ async def cmd_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⛽ Petrol: {fmt(db.PETROL_COST)}/day\n"
         f"☀️ Weekday parking: {fmt(db.WEEKDAY_RATE)}/day\n"
         f"🌙 Evening/weekend: {fmt(db.EVENING_RATE)}/day\n"
-        f"🔒 Weekly cap: {fmt(db.WEEKLY_CAP)} (auto for {FRIEND_1}, optional for {FRIEND_2})\n"
-        f"👤 Extra passenger parking basis: {fmt(db.EXTRA_PARK_BASIS)}/day",
+        f"🔒 Weekly parking cap: {fmt(db.WEEKLY_CAP)} _(all friends, auto)_\n"
+        f"👤 Extra passenger: 1 unit share of daily cost _(doesn't affect named friends)_",
         parse_mode="Markdown")
 
 
-# ── Scheduler setup using PTB job_queue ────────────────────────────────────────
+# ── Scheduler ──────────────────────────────────────────────────────────────────
 def setup_jobs(app: Application):
     jq = app.job_queue
-    tz = TZ
-
-    # 2pm Mon–Fri: morning check-in
-    jq.run_daily(job_morning, time=time(14, 0, tzinfo=tz), days=WEEKDAYS)
-    # 9pm Mon–Fri: evening check-in
-    jq.run_daily(job_evening, time=time(21, 0, tzinfo=tz), days=WEEKDAYS)
-    # 10pm Mon–Fri: late nudge
-    jq.run_daily(job_late_nudge, time=time(22, 0, tzinfo=tz), days=WEEKDAYS)
-    # Sat 9am: parking + weekly summary
-    jq.run_daily(job_weekly, time=time(9, 0, tzinfo=tz), days=(5,))  # 5 = Saturday
-
-    logger.info("Jobs scheduled via job_queue")
+    jq.run_daily(job_morning,    time=time(14, 0, tzinfo=TZ), days=WEEKDAYS)
+    jq.run_daily(job_evening,    time=time(21, 0, tzinfo=TZ), days=WEEKDAYS)
+    jq.run_daily(job_late_nudge, time=time(22, 0, tzinfo=TZ), days=WEEKDAYS)
+    jq.run_daily(job_weekly,     time=time(9,  0, tzinfo=TZ), days=(5,))
+    logger.info("Jobs scheduled")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     db.init()
-
-    # Webhook URL must be set in Railway env vars, e.g.:
-    #   WEBHOOK_URL = https://your-app.up.railway.app
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
-    port        = int(os.environ.get("PORT", 8080))  # Railway sets PORT automatically
+    port        = int(os.environ.get("PORT", 8080))
 
     app = Application.builder().token(TOKEN).build()
-
     setup_jobs(app)
 
     app.add_handler(CommandHandler("start",   cmd_start))
@@ -628,7 +625,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     if webhook_url:
-        logger.info(f"Starting webhook on port {port}")
+        logger.info(f"Webhook mode on port {port}")
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -637,7 +634,7 @@ def main():
             allowed_updates=Update.ALL_TYPES,
         )
     else:
-        logger.info("No WEBHOOK_URL set — falling back to polling (dev only)")
+        logger.info("Polling mode (dev)")
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
