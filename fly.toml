@@ -1,7 +1,8 @@
 app = "carcostbot"
-primary_region = "lhr"  # London
+primary_region = "lhr"
 
 [build]
+  dockerfile = "Dockerfile"
 
 [http_service]
   internal_port = 8080
@@ -17,3 +18,8 @@ primary_region = "lhr"  # London
 
 [env]
   PORT = "8080"
+  DATA_FILE = "/data/carbot.json"
+
+[[mounts]]
+  source = "carbot_data"
+  destination = "/data"

@@ -1,114 +1,93 @@
 """
-Car cost bot DB — v5
-
-Friends: F1 (Fran), F2 (Lauren), F3 (Noah)
-Parking cap: applied automatically to ALL named friends
-Extra passengers: pay 1-unit share of main pool cost — do NOT dilute the main pool
+Car cost bot DB — v6
+JSON file store instead of SQLite — no external dependencies.
 """
-import sqlite3
-from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
 
-DB_PATH          = "carbot.db"
+DATA_FILE        = os.environ.get("DATA_FILE", "/data/carbot.json")
 PETROL_COST      = 3.10
 WEEKDAY_RATE     = 3.50
 EVENING_RATE     = 2.50
 WEEKLY_CAP       = 10.50
 
 
-@contextmanager
-def conn():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
+def _load() -> dict:
     try:
-        yield c
-        c.commit()
-    finally:
-        c.close()
+        return json.loads(Path(DATA_FILE).read_text())
+    except Exception:
+        return {}
 
 
-def init():
-    with conn() as c:
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS days (
-                date               TEXT PRIMARY KEY,
-                friend1_morning    INTEGER DEFAULT 0,
-                friend1_evening    INTEGER DEFAULT 0,
-                friend2_morning    INTEGER DEFAULT 0,
-                friend2_evening    INTEGER DEFAULT 0,
-                friend3_morning    INTEGER DEFAULT 0,
-                friend3_evening    INTEGER DEFAULT 0,
-                parking_type       TEXT    DEFAULT 'none',
-                extra_passengers   INTEGER DEFAULT 0,
-                skipped            INTEGER DEFAULT 0,
-                evening_logged     INTEGER DEFAULT 0
-            )
-        """)
-        cols = [r[1] for r in c.execute("PRAGMA table_info(days)")]
-        for col, defn in [
-            ("extra_passengers", "INTEGER DEFAULT 0"),
-            ("parking_type",     "TEXT DEFAULT 'none'"),
-            ("skipped",          "INTEGER DEFAULT 0"),
-            ("evening_logged",   "INTEGER DEFAULT 0"),
-            ("friend3_morning",  "INTEGER DEFAULT 0"),
-            ("friend3_evening",  "INTEGER DEFAULT 0"),
-        ]:
-            if col not in cols:
-                c.execute(f"ALTER TABLE days ADD COLUMN {col} {defn}")
+def _save(data: dict):
+    p = Path(DATA_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2))
+
+
+def _day(data: dict, day: str) -> dict:
+    if day not in data:
+        data[day] = {
+            "friend1_morning": 0, "friend1_evening": 0,
+            "friend2_morning": 0, "friend2_evening": 0,
+            "friend3_morning": 0, "friend3_evening": 0,
+            "parking_type": "none", "extra_passengers": 0,
+            "skipped": 0, "evening_logged": 0,
+        }
+    return data[day]
+
+
+def init(): pass  # no-op, file created on first write
 
 
 def ensure_day(day: str):
-    with conn() as c:
-        c.execute("INSERT OR IGNORE INTO days (date) VALUES (?)", (day,))
+    data = _load()
+    _day(data, day)
+    _save(data)
 
 
 def set_trip(day: str, field: str, value: bool):
-    ensure_day(day)
-    with conn() as c:
-        c.execute(f"UPDATE days SET {field} = ? WHERE date = ?", (1 if value else 0, day))
+    data = _load()
+    _day(data, day)[field] = 1 if value else 0
+    _save(data)
 
 
 def set_parking_type(day: str, ptype: str):
-    ensure_day(day)
-    with conn() as c:
-        c.execute("UPDATE days SET parking_type = ? WHERE date = ?", (ptype, day))
+    data = _load()
+    _day(data, day)["parking_type"] = ptype
+    _save(data)
 
 
 def set_extra_passengers(day: str, count: int):
-    ensure_day(day)
-    with conn() as c:
-        c.execute("UPDATE days SET extra_passengers = ? WHERE date = ?", (count, day))
+    data = _load()
+    _day(data, day)["extra_passengers"] = count
+    _save(data)
 
 
 def set_skipped(day: str, val: bool):
-    ensure_day(day)
-    with conn() as c:
-        c.execute("UPDATE days SET skipped = ? WHERE date = ?", (1 if val else 0, day))
+    data = _load()
+    _day(data, day)["skipped"] = 1 if val else 0
+    _save(data)
 
 
 def set_evening_logged(day: str):
-    ensure_day(day)
-    with conn() as c:
-        c.execute("UPDATE days SET evening_logged = 1 WHERE date = ?", (day,))
+    data = _load()
+    _day(data, day)["evening_logged"] = 1
+    _save(data)
 
 
 def is_skipped(day: str) -> bool:
-    with conn() as c:
-        row = c.execute("SELECT skipped FROM days WHERE date = ?", (day,)).fetchone()
-    return bool(row["skipped"]) if row else False
+    return bool(_load().get(day, {}).get("skipped", 0))
 
 
 def is_evening_logged(day: str) -> bool:
-    with conn() as c:
-        row = c.execute("SELECT evening_logged FROM days WHERE date = ?", (day,)).fetchone()
-    return bool(row["evening_logged"]) if row else False
+    return bool(_load().get(day, {}).get("evening_logged", 0))
 
 
 def has_any_data(day: str) -> bool:
-    with conn() as c:
-        row = c.execute("SELECT * FROM days WHERE date = ?", (day,)).fetchone()
-    if not row:
-        return False
-    return bool(row["evening_logged"]) or bool(row["skipped"])
+    d = _load().get(day, {})
+    return bool(d.get("evening_logged", 0)) or bool(d.get("skipped", 0))
 
 
 def parking_rate(ptype: str) -> float:
@@ -118,21 +97,17 @@ def parking_rate(ptype: str) -> float:
 
 
 def day_summary(day: str) -> dict:
-    with conn() as c:
-        row = c.execute("SELECT * FROM days WHERE date = ?", (day,)).fetchone()
+    row = _load().get(day)
     if not row:
         return _empty_day(day)
 
-    cols    = row.keys()
     f1t     = row["friend1_morning"] + row["friend1_evening"]
     f2t     = row["friend2_morning"] + row["friend2_evening"]
-    f3t     = (row["friend3_morning"] + row["friend3_evening"]) if "friend3_morning" in cols else 0
-    ext     = row["extra_passengers"] or 0
-    ptype   = row["parking_type"] or "none"
+    f3t     = row.get("friend3_morning", 0) + row.get("friend3_evening", 0)
+    ext     = row.get("extra_passengers", 0)
+    ptype   = row.get("parking_type", "none")
     parking = parking_rate(ptype)
     daily   = parking + PETROL_COST
-
-    # Main pool: driver (2) + named friends only
     pool_units = 2 + f1t + f2t + f3t
 
     def named_share(trips, cost):
@@ -147,30 +122,19 @@ def day_summary(day: str) -> dict:
     f2_pet  = named_share(f2t, PETROL_COST)
     f3_pet  = named_share(f3t, PETROL_COST)
 
-    # Extras: pay 1 unit of the main pool rate (1 trip, not diluting)
-    unit_cost    = daily / pool_units if pool_units > 0 else 0.0
-    ex_owes_each = round(unit_cost, 2)
+    unit_cost     = daily / pool_units if pool_units > 0 else 0.0
+    ex_owes_each  = round(unit_cost, 2)
     ex_owes_total = round(ex_owes_each * ext, 2)
 
     return {
-        "date":             day,
-        "parking_type":     ptype,
-        "parking_cost":     parking,
-        "petrol":           PETROL_COST,
-        "pool_units":       pool_units,
-        "friend1_trips":    f1t,
-        "friend2_trips":    f2t,
-        "friend3_trips":    f3t,
+        "date": day, "parking_type": ptype, "parking_cost": parking,
+        "petrol": PETROL_COST, "pool_units": pool_units,
+        "friend1_trips": f1t, "friend2_trips": f2t, "friend3_trips": f3t,
         "extra_passengers": ext,
-        "f1_park":          f1_park,
-        "f2_park":          f2_park,
-        "f3_park":          f3_park,
-        "f1_pet":           f1_pet,
-        "f2_pet":           f2_pet,
-        "f3_pet":           f3_pet,
-        "ex_owes_each":     ex_owes_each,
-        "ex_owes_total":    ex_owes_total,
-        "unit_cost":        round(unit_cost, 4),
+        "f1_park": f1_park, "f2_park": f2_park, "f3_park": f3_park,
+        "f1_pet":  f1_pet,  "f2_pet":  f2_pet,  "f3_pet":  f3_pet,
+        "ex_owes_each": ex_owes_each, "ex_owes_total": ex_owes_total,
+        "unit_cost": round(unit_cost, 4),
     }
 
 
@@ -187,51 +151,31 @@ def _empty_day(day=""):
 
 
 def weekly_totals(days: list) -> dict:
-    """
-    All friends get the same auto cap on parking.
-    Petrol never capped.
-    """
-    f1_wd = f1_ev = 0.0
-    f2_wd = f2_ev = 0.0
-    f3_wd = f3_ev = 0.0
+    f1_wd = f1_ev = f2_wd = f2_ev = f3_wd = f3_ev = 0.0
     f1_pet = f2_pet = f3_pet = 0.0
 
     for day in days:
         s     = day_summary(day)
         ptype = s["parking_type"]
         if ptype == "weekday":
-            f1_wd += s["f1_park"]
-            f2_wd += s["f2_park"]
-            f3_wd += s["f3_park"]
+            f1_wd += s["f1_park"]; f2_wd += s["f2_park"]; f3_wd += s["f3_park"]
         elif ptype == "evening":
-            f1_ev += s["f1_park"]
-            f2_ev += s["f2_park"]
-            f3_ev += s["f3_park"]
-        f1_pet += s["f1_pet"]
-        f2_pet += s["f2_pet"]
-        f3_pet += s["f3_pet"]
+            f1_ev += s["f1_park"]; f2_ev += s["f2_park"]; f3_ev += s["f3_park"]
+        f1_pet += s["f1_pet"]; f2_pet += s["f2_pet"]; f3_pet += s["f3_pet"]
 
     def capped(wd, ev):
         return min(wd, WEEKLY_CAP) + min(ev, WEEKLY_CAP)
 
-    f1_park_raw    = f1_wd + f1_ev
-    f2_park_raw    = f2_wd + f2_ev
-    f3_park_raw    = f3_wd + f3_ev
-    f1_park_capped = capped(f1_wd, f1_ev)
-    f2_park_capped = capped(f2_wd, f2_ev)
-    f3_park_capped = capped(f3_wd, f3_ev)
+    f1_pr = f1_wd + f1_ev; f2_pr = f2_wd + f2_ev; f3_pr = f3_wd + f3_ev
+    f1_pc = capped(f1_wd, f1_ev)
+    f2_pc = capped(f2_wd, f2_ev)
+    f3_pc = capped(f3_wd, f3_ev)
 
     return {
-        "friend1":          round(f1_pet + f1_park_capped, 2),
-        "friend2":          round(f2_pet + f2_park_capped, 2),
-        "friend3":          round(f3_pet + f3_park_capped, 2),
-        "f1_pet":           round(f1_pet, 2),
-        "f2_pet":           round(f2_pet, 2),
-        "f3_pet":           round(f3_pet, 2),
-        "f1_park_raw":      round(f1_park_raw, 2),
-        "f2_park_raw":      round(f2_park_raw, 2),
-        "f3_park_raw":      round(f3_park_raw, 2),
-        "f1_park_capped":   round(f1_park_capped, 2),
-        "f2_park_capped":   round(f2_park_capped, 2),
-        "f3_park_capped":   round(f3_park_capped, 2),
+        "friend1": round(f1_pet + f1_pc, 2),
+        "friend2": round(f2_pet + f2_pc, 2),
+        "friend3": round(f3_pet + f3_pc, 2),
+        "f1_pet": round(f1_pet, 2), "f2_pet": round(f2_pet, 2), "f3_pet": round(f3_pet, 2),
+        "f1_park_raw": round(f1_pr, 2), "f2_park_raw": round(f2_pr, 2), "f3_park_raw": round(f3_pr, 2),
+        "f1_park_capped": round(f1_pc, 2), "f2_park_capped": round(f2_pc, 2), "f3_park_capped": round(f3_pc, 2),
     }
